@@ -75,6 +75,20 @@ defmodule ExW3.Contract do
     )
   end
 
+  def get_logs(contract_name, event_name, event_data, opts \\ []) do
+    event_data = event_data |> event_data_format_helper()
+    topics = contract_name |> ExW3.Contract.get_topics(event_name, event_data)
+
+    ExW3.Rpc.get_logs(
+      %{
+        address: contract_name |> address(),
+        topics: topics
+      }
+      |> Map.merge(event_data),
+      opts
+    )
+  end
+
   def get_topics(contract_name, event_name, event_data) do
     get_state()
     |> get_topics(contract_name, event_name, event_data)
