@@ -1,6 +1,8 @@
 defmodule ExW3.Contract do
   use GenServer
 
+  @type opts :: {:url, String.t()}
+
   @doc "Begins the Contract process to manage all interactions with smart contracts"
   @spec start_link() :: {:ok, pid()}
   def start_link(_ \\ :ok) do
@@ -56,20 +58,20 @@ defmodule ExW3.Contract do
   end
 
   @doc "Installs a filter on the Ethereum node. This also formats the parameters, and saves relevant information to format event logs."
-  @spec filter(atom(), binary(), map()) :: {:ok, binary()}
-  def filter(contract_name, event_name, event_data \\ %{}) do
+  @spec filter(atom(), binary(), map(), [opts]) :: {:ok, binary()}
+  def filter(contract_name, event_name, event_data \\ %{}, opts \\ []) do
     GenServer.call(
       ContractManager,
-      {:filter, {contract_name, event_name, event_data}}
+      {:filter, {contract_name, event_name, event_data, opts}}
     )
   end
 
   @doc "Using saved information related to the filter id, event logs are formatted properly"
-  @spec get_filter_changes(binary()) :: {:ok, list()}
-  def get_filter_changes(filter_id) do
+  @spec get_filter_changes(binary(), [opts]) :: {:ok, list()}
+  def get_filter_changes(filter_id, opts \\ []) do
     GenServer.call(
       ContractManager,
-      {:get_filter_changes, filter_id}
+      {:get_filter_changes, filter_id, opts}
     )
   end
 
@@ -394,7 +396,7 @@ defmodule ExW3.Contract do
     Map.put(log, "data", new_data)
   end
 
-  def handle_call({:filter, {contract_name, event_name, event_data}}, _from, state) do
+  def handle_call({:filter, {contract_name, event_name, event_data, opts}}, _from, state) do
     contract_info = state[contract_name]
 
     event_signature = contract_info[:event_names][event_name]
@@ -409,7 +411,7 @@ defmodule ExW3.Contract do
         event_data_format_helper(event_data)
       )
 
-    filter_id = ExW3.Rpc.new_filter(payload)
+    filter_id = ExW3.Rpc.new_filter(payload, opts)
 
     {:reply, {:ok, filter_id},
      Map.put(
@@ -422,13 +424,13 @@ defmodule ExW3.Contract do
      )}
   end
 
-  def handle_call({:get_filter_changes, filter_id}, _from, state) do
+  def handle_call({:get_filter_changes, filter_id, opts}, _from, state) do
     filter_info = Map.get(state[:filters], filter_id)
 
     event_attributes =
       get_event_attributes(state, filter_info[:contract_name], filter_info[:event_name])
 
-    logs = ExW3.Rpc.get_filter_changes(filter_id)
+    logs = ExW3.Rpc.get_filter_changes(filter_id, opts)
 
     formatted_logs =
       if logs != [] do

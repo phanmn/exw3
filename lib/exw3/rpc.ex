@@ -71,18 +71,18 @@ defmodule ExW3.Rpc do
   end
 
   @doc "Creates a new filter, returns filter id. For more sophisticated use, prefer ExW3.Contract.filter."
-  @spec new_filter(map()) :: binary() | {:error, any()}
-  def new_filter(map) do
-    case call_client(:eth_new_filter, [map]) do
+  @spec new_filter(map(), [opts]) :: binary() | {:error, any()}
+  def new_filter(map, opts \\ []) do
+    case call_client(:eth_new_filter, [map, opts]) do
       {:ok, filter_id} -> filter_id
       err -> err
     end
   end
 
   @doc "Gets event changes (logs) by filter. Unlike ExW3.Contract.get_filter_changes it does not return the data in a formatted way"
-  @spec get_filter_changes(binary()) :: any()
-  def get_filter_changes(filter_id) do
-    case call_client(:eth_get_filter_changes, [filter_id]) do
+  @spec get_filter_changes(binary(), [opts]) :: any()
+  def get_filter_changes(filter_id, opts \\ []) do
+    case call_client(:eth_get_filter_changes, [filter_id, opts]) do
       {:ok, changes} -> changes
       err -> err
     end
