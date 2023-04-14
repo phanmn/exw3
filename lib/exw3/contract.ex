@@ -87,6 +87,15 @@ defmodule ExW3.Contract do
       |> Map.merge(event_data),
       opts
     )
+    |> case do
+      {:ok, logs} ->
+        {:ok,
+         logs
+         |> format_logs(get_state(), contract_name, event_name)}
+
+      e ->
+        e
+    end
   end
 
   def get_topics(contract_name, event_name, event_data) do
@@ -395,6 +404,29 @@ defmodule ExW3.Contract do
     Enum.zip(names, ExW3.Abi.decode_event(data, signature)) |> Enum.into(%{})
   end
 
+  defp format_logs([], _, _, _) do
+    []
+  end
+
+  defp format_logs(logs, state, contract_name, event_name) do
+    event_attributes =
+      state
+      |> get_event_attributes(contract_name, event_name)
+
+    logs
+    |> Enum.map(fn log ->
+      [
+        ExW3.Normalize.transform_to_integer(log, [
+          "blockNumber",
+          "logIndex",
+          "transactionIndex"
+        ]),
+        format_log_data(log, event_attributes)
+      ]
+      |> Enum.reduce(&Map.merge/2)
+    end)
+  end
+
   defp format_log_data(log, event_attributes) do
     non_indexed_fields =
       extract_non_indexed_fields(
@@ -452,36 +484,26 @@ defmodule ExW3.Contract do
   end
 
   def handle_call({:get_filter_changes, filter_id, opts}, _from, state) do
-    filter_info = Map.get(state[:filters], filter_id)
+    filter_id
+    |> ExW3.Rpc.get_filter_changes(opts)
+    |> then(fn
+      [] ->
+        []
 
-    event_attributes =
-      get_event_attributes(state, filter_info[:contract_name], filter_info[:event_name])
+      logs when is_list(logs) ->
+        filter_info =
+          state[:filters]
+          |> Map.get(filter_id)
 
-    logs = ExW3.Rpc.get_filter_changes(filter_id, opts)
-
-    formatted_logs =
-      if logs != [] do
-        Enum.map(logs, fn log ->
-          formatted_log =
-            Enum.reduce(
-              [
-                ExW3.Normalize.transform_to_integer(log, [
-                  "blockNumber",
-                  "logIndex",
-                  "transactionIndex"
-                ]),
-                format_log_data(log, event_attributes)
-              ],
-              &Map.merge/2
-            )
-
-          formatted_log
-        end)
-      else
         logs
-      end
+        |> format_logs(state, filter_info[:contract_name], filter_info[:event_name])
 
-    {:reply, {:ok, formatted_logs}, state}
+      v ->
+        v
+    end)
+    |> then(fn logs ->
+      {:reply, {:ok, logs}, state}
+    end)
   end
 
   def handle_call({:deploy, {name, args}}, _from, state) do
