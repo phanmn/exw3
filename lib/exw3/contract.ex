@@ -1,5 +1,6 @@
 defmodule ExW3.Contract do
   use GenServer
+  require Logger
 
   @type opts :: {:url, String.t()}
 
@@ -76,8 +77,8 @@ defmodule ExW3.Contract do
   end
 
   def get_logs(contract_name, event_name, event_data, opts \\ []) do
+    topics = contract_name |> get_topics(event_name, event_data)
     event_data = event_data |> event_data_format_helper()
-    topics = contract_name |> ExW3.Contract.get_topics(event_name, event_data)
 
     ExW3.Rpc.get_logs(
       %{
@@ -126,14 +127,15 @@ defmodule ExW3.Contract do
     Enum.join([name, "(", Enum.join(non_indexed_types, ","), ")"])
   end
 
+  defp topic_types_helper([]) do
+    []
+  end
+
   defp topic_types_helper(fields) do
-    if length(fields) > 0 do
-      Enum.map(fields, fn field ->
-        "(#{field["type"]})"
-      end)
-    else
-      []
-    end
+    fields
+    |> Enum.map(fn field ->
+      "(#{field["type"]})"
+    end)
   end
 
   defp init_events(abi) do
