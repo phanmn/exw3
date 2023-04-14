@@ -334,7 +334,7 @@ defmodule ExW3.Contract do
   defp param_helper(event_data, key) do
     if event_data[key] do
       new_param =
-        if Enum.member?(["latest", "earliest", "pending"], event_data[key]) do
+        if Enum.member?(["latest", "earliest", "pending", "0"], event_data[key]) do
           event_data[key]
         else
           "0x" <>
