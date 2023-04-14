@@ -1,4 +1,6 @@
 defmodule ExW3.Abi do
+  require Logger
+
   @doc "Decodes event based on given data and provided signature"
   @spec decode_event(binary(), binary()) :: any()
   def decode_event(data, signature) do
@@ -46,14 +48,18 @@ defmodule ExW3.Abi do
 
     output_types = Enum.map(abi[name]["outputs"], fn x -> x["type"] end)
     types_signature = Enum.join(["(", Enum.join(output_types, ","), ")"])
-    output_signature = "#{name}(#{types_signature})"
+    output_signature = "#{name}#{types_signature}"
 
     outputs =
       ABI.decode(output_signature, trim_output)
       |> List.first()
-      |> Tuple.to_list()
 
     outputs
+    |> is_tuple()
+    |> case do
+      true -> outputs |> Tuple.to_list()
+      _ -> [outputs]
+    end
   end
 
   @doc "Returns the type signature of a given function"

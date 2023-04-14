@@ -42,8 +42,14 @@ defmodule ExW3.Contract do
 
   @doc "Use a Contract's method with an eth_call"
   @spec call(atom(), atom(), list(), any()) :: {:ok, any()}
-  def call(contract_name, method_name, args \\ [], timeout \\ :infinity) do
-    GenServer.call(ContractManager, {:call, {contract_name, method_name, args}}, timeout)
+  def call(contract_name, method_name, args \\ [], options \\ []) do
+    contract_info = get_state() |> Map.get(contract_name)
+
+    with {:ok, address} <- check_option(contract_info[:address], :missing_address) do
+      eth_call_helper(address, contract_info[:abi], Atom.to_string(method_name), args, options)
+    else
+      err -> err
+    end
   end
 
   @doc "Use a Contract's method with an eth_sendTransaction"
@@ -244,16 +250,16 @@ defmodule ExW3.Contract do
     {tx_receipt["contractAddress"], tx_hash}
   end
 
-  def eth_call_helper(address, abi, method_name, args) do
-    result =
-      ExW3.Rpc.eth_call([
-        %{
-          to: address,
-          data: "0x#{ExW3.Abi.encode_method_call(abi, method_name, args)}"
-        }
-      ])
-
-    case result do
+  def eth_call_helper(address, abi, method_name, args, opts \\ []) do
+    ExW3.Rpc.eth_call([
+      %{
+        to: address,
+        data: "0x#{ExW3.Abi.encode_method_call(abi, method_name, args)}"
+      },
+      "latest",
+      opts
+    ])
+    |> case do
       {:ok, data} ->
         ([:ok] ++ ExW3.Abi.decode_output(abi, method_name, data)) |> List.to_tuple()
 
@@ -524,17 +530,6 @@ defmodule ExW3.Contract do
 
   def handle_call({:address, name}, _from, state) do
     {:reply, state[name][:address], state}
-  end
-
-  def handle_call({:call, {contract_name, method_name, args}}, _from, state) do
-    contract_info = state[contract_name]
-
-    with {:ok, address} <- check_option(contract_info[:address], :missing_address) do
-      result = eth_call_helper(address, contract_info[:abi], Atom.to_string(method_name), args)
-      {:reply, result, state}
-    else
-      err -> {:reply, err, state}
-    end
   end
 
   def handle_call({:send, {contract_name, method_name, args, options}}, _from, state) do
