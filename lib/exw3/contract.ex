@@ -75,8 +75,27 @@ defmodule ExW3.Contract do
     )
   end
 
+  def get_topics(contract_name, event_name, event_data) do
+    get_state()
+    |> get_topics(contract_name, event_name, event_data)
+  end
+
   def init(state) do
     {:ok, state}
+  end
+
+  defp get_state() do
+    ContractManager |> :sys.get_state()
+  end
+
+  defp get_topics(state, contract_name, event_name, event_data) do
+    contract_info = state |> Map.get(contract_name)
+
+    event_signature = contract_info[:event_names][event_name]
+    topic_types = contract_info[:events][event_signature][:topic_types]
+    topic_names = contract_info[:events][event_signature][:topic_names]
+
+    filter_topics_helper(event_signature, event_data, topic_types, topic_names)
   end
 
   defp data_signature_helper(name, fields) do
@@ -171,9 +190,7 @@ defmodule ExW3.Contract do
           input_types_count = Enum.count(input_types)
 
           if input_types_count != arg_count do
-            raise "Number of provided arguments to constructor is incorrect. Was given #{
-                    arg_count
-                  } args, looking for #{input_types_count}."
+            raise "Number of provided arguments to constructor is incorrect. Was given #{arg_count} args, looking for #{input_types_count}."
           end
 
           bin <>
@@ -399,11 +416,7 @@ defmodule ExW3.Contract do
   def handle_call({:filter, {contract_name, event_name, event_data, opts}}, _from, state) do
     contract_info = state[contract_name]
 
-    event_signature = contract_info[:event_names][event_name]
-    topic_types = contract_info[:events][event_signature][:topic_types]
-    topic_names = contract_info[:events][event_signature][:topic_names]
-
-    topics = filter_topics_helper(event_signature, event_data, topic_types, topic_names)
+    topics = state |> get_topics(contract_name, event_name, event_data)
 
     payload =
       Map.merge(
