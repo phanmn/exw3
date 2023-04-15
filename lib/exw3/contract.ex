@@ -1,131 +1,200 @@
 defmodule ExW3.Contract do
   use GenServer
+  use OK.Pipe
   require Logger
 
   @type opts :: {:url, String.t()}
 
   @doc "Begins the Contract process to manage all interactions with smart contracts"
-  @spec start_link() :: {:ok, pid()}
-  def start_link(_ \\ :ok) do
-    GenServer.start_link(__MODULE__, %{filters: %{}}, name: ContractManager)
-  end
-
-  @doc "Deploys contracts with given arguments"
-  @spec deploy(atom(), list()) :: {:ok, binary(), binary()}
-  def deploy(name, args) do
-    GenServer.call(ContractManager, {:deploy, {name, args}})
+  @spec start_link(any) :: :ignore | {:error, any} | {:ok, pid}
+  def start_link(_opts \\ []) do
+    GenServer.start_link(__MODULE__, %{}, name: name())
   end
 
   @doc "Registers the contract with the ContractManager process. Only :abi is required field."
-  @spec register(atom(), list()) :: :ok
-  def register(name, contract_info) do
-    GenServer.cast(ContractManager, {:register, {name, contract_info}})
+  @spec register(any, list) :: :ok
+  def register(contract_name, contract_info) do
+    contract_name
+    |> ExW3.Contract.State.put(
+      register_helper(contract_info),
+      :contract
+    )
+
+    :ok
   end
 
-  @doc "Uninstalls the filter, and deletes the data associated with the filter id"
-  @spec uninstall_filter(binary()) :: :ok
-  def uninstall_filter(filter_id) do
-    GenServer.cast(ContractManager, {:uninstall_filter, filter_id})
+  @doc "Unregister the contract"
+  @spec unregister(any) :: :ok
+  def unregister(contract_name) do
+    contract_name
+    |> ExW3.Contract.State.delete(:contract)
+
+    :ok
   end
 
   @doc "Sets the address for the contract specified by the name argument"
-  @spec at(atom(), binary()) :: :ok
-  def at(name, address) do
-    GenServer.cast(ContractManager, {:at, {name, address}})
+  @spec at(any, binary()) :: true
+  def at(contract_name, address) do
+    contract_state = contract_name |> contract()
+    contract_state = Keyword.put(contract_state, :address, address)
+
+    ExW3.Contract.State.put(contract_name, contract_state, :contract)
   end
 
-  @doc "Returns the current Contract GenServer's address"
-  @spec address(atom()) :: {:ok, binary()}
-  def address(name) do
-    GenServer.call(ContractManager, {:address, name})
+  @doc "Returns the current Contract address"
+  @spec address(any) :: binary()
+  def address(contract_name) do
+    contract_name
+    |> contract()
+    |> Keyword.get(:address)
   end
 
   @doc "Use a Contract's method with an eth_call"
-  @spec call(atom(), atom(), list(), any()) :: {:ok, any()}
+  @spec call(any(), atom(), list(), any()) :: {:ok, any()}
   def call(contract_name, method_name, args \\ [], options \\ []) do
-    contract_info = get_state() |> Map.get(contract_name)
+    contract_info =
+      contract_name
+      |> contract()
 
     with {:ok, address} <- check_option(contract_info[:address], :missing_address) do
-      eth_call_helper(address, contract_info[:abi], Atom.to_string(method_name), args, options)
+      eth_call_helper(address, contract_info[:abi], method_name, args, options)
     else
       err -> err
     end
   end
 
-  @doc "Use a Contract's method with an eth_sendTransaction"
-  @spec send(atom(), atom(), list(), map()) :: {:ok, binary()}
-  def send(contract_name, method_name, args, options) do
-    GenServer.call(ContractManager, {:send, {contract_name, method_name, args, options}})
-  end
-
-  @doc "Returns a formatted transaction receipt for the given transaction hash(id)"
-  @spec tx_receipt(atom(), binary()) :: map()
-  def tx_receipt(contract_name, tx_hash) do
-    GenServer.call(ContractManager, {:tx_receipt, {contract_name, tx_hash}})
-  end
-
-  @doc "Installs a filter on the Ethereum node. This also formats the parameters, and saves relevant information to format event logs."
-  @spec filter(atom(), binary(), map(), [opts]) :: {:ok, binary()}
-  def filter(contract_name, event_name, event_data \\ %{}, opts \\ []) do
-    GenServer.call(
-      ContractManager,
-      {:filter, {contract_name, event_name, event_data, opts}}
-    )
-  end
-
-  @doc "Using saved information related to the filter id, event logs are formatted properly"
-  @spec get_filter_changes(binary(), [opts]) :: {:ok, list()}
-  def get_filter_changes(filter_id, opts \\ []) do
-    GenServer.call(
-      ContractManager,
-      {:get_filter_changes, filter_id, opts}
-    )
-  end
-
+  @doc "Get logs"
+  @spec get_logs(any, any, nil | maybe_improper_list | map, [{:url, binary}]) ::
+          {:error, atom | binary | map} | {:ok, list}
   def get_logs(contract_name, event_name, event_data, opts \\ []) do
-    topics = contract_name |> get_topics(event_name, event_data)
-    event_data = event_data |> event_data_format_helper()
+    %{
+      address: contract_name |> address(),
+      topics: contract_name |> get_topics(event_name, event_data)
+    }
+    |> Map.merge(event_data |> event_data_format_helper())
+    |> ExW3.Rpc.get_logs(opts)
+    ~>> format_logs(contract_name, event_name)
+    |> OK.wrap()
+  end
 
-    ExW3.Rpc.get_logs(
-      %{
-        address: contract_name |> address(),
-        topics: topics
-      }
-      |> Map.merge(event_data),
-      opts
-    )
-    |> case do
-      {:ok, logs} ->
-        {:ok,
-         logs
-         |> format_logs(get_state(), contract_name, event_name)}
+  @doc "Use a Contract's method with an eth_sendTransaction"
+  @spec send(any, any, any, any) :: {:error, atom | binary | map} | {:ok, any}
+  def send(contract_name, method_name, args, options) do
+    contract_info = contract_name |> contract()
 
-      e ->
-        e
+    with {:ok, address} <- check_option(contract_info[:address], :missing_address),
+         {:ok, _} <- check_option(options[:from], :missing_sender),
+         {:ok, _} <- check_option(options[:gas], :missing_gas) do
+      eth_send_helper(
+        address,
+        contract_info[:abi],
+        method_name |> method_name(),
+        args,
+        options
+      )
+    else
+      err -> err
     end
   end
 
-  def get_topics(contract_name, event_name, event_data) do
-    get_state()
-    |> get_topics(contract_name, event_name, event_data)
+  @doc "Returns a formatted transaction receipt for the given transaction hash(id)"
+  def tx_receipt(contract_name, tx_hash) do
+    {:ok, receipt} = tx_hash |> ExW3.tx_receipt()
+    events = contract_name |> contract() |> Map.get(:events)
+
+    receipt["logs"]
+    |> Enum.map(fn log ->
+      events
+      |> Map.get(log["topics"] |> Enum.at(0))
+      |> case do
+        nil ->
+          nil
+
+        event_attributes ->
+          log
+          |> ExW3.Log.format_data(event_attributes)
+      end
+    end)
+    |> then(fn logs ->
+      {receipt, logs}
+    end)
+    |> OK.success()
+  end
+
+  def deploy(contract_name, args) do
+    contract_info = contract_name |> contract()
+
+    with {:ok, _} <- check_option(args[:options][:from], :missing_sender),
+         {:ok, _} <- check_option(args[:options][:gas], :missing_gas),
+         {:ok, bin} <-
+           check_option([:bin |> ExW3.Contract.State.get(), args[:bin]], :missing_binary) do
+      {contract_addr, tx_hash} = deploy_helper(bin, contract_info[:abi], args)
+      {:ok, contract_addr, tx_hash}
+    else
+      err -> err
+    end
+  end
+
+  @doc "Installs a filter on the Ethereum node. This also formats the parameters, and saves relevant information to format event logs."
+  def filter(contract_name, event_name, event_data \\ %{}, opts \\ []) do
+    contract = contract_name |> contract()
+
+    %{
+      address: contract[:address],
+      topics: contract_name |> get_topics(event_name, event_data)
+    }
+    |> Map.merge(
+      event_data
+      |> event_data_format_helper()
+    )
+    |> ExW3.Rpc.new_filter(opts)
+    |> tap(fn filter_id ->
+      filter_id
+      |> ExW3.Contract.State.put(
+        %{
+          contract_name: contract_name,
+          event_name: event_name
+        },
+        :filter
+      )
+    end)
+    |> OK.success()
+  end
+
+  @doc "Using saved information related to the filter id, event logs are formatted properly"
+  @spec get_filter_changes(binary, [{:url, binary}]) :: {:ok, list}
+  def get_filter_changes(filter_id, opts \\ []) do
+    filter_id
+    |> ExW3.Rpc.get_filter_changes(opts)
+    |> case do
+      [] ->
+        []
+
+      logs when is_list(logs) ->
+        filter = filter_id |> ExW3.Contract.State.get(:filter)
+
+        logs
+        |> format_logs(filter[:contract_name], filter[:event_name])
+    end
+    |> OK.success()
   end
 
   def init(state) do
+    ExW3.Contract.State.init()
+
     {:ok, state}
   end
 
-  defp get_state() do
-    ContractManager |> :sys.get_state()
+  defp name() do
+    __MODULE__
   end
 
-  defp get_topics(state, contract_name, event_name, event_data) do
-    contract_info = state |> Map.get(contract_name)
-
-    event_signature = contract_info[:event_names][event_name]
-    topic_types = contract_info[:events][event_signature][:topic_types]
-    topic_names = contract_info[:events][event_signature][:topic_names]
-
-    filter_topics_helper(event_signature, event_data, topic_types, topic_names)
+  defp register_helper(contract_info) do
+    if contract_info[:abi] do
+      contract_info ++ init_events(contract_info[:abi])
+    else
+      raise "ABI not provided upon initialization"
+    end
   end
 
   defp data_signature_helper(name, fields) do
@@ -204,6 +273,14 @@ defmodule ExW3.Contract do
     ]
   end
 
+  # Options' checkers
+
+  defp check_option(nil, error_atom), do: {:error, error_atom}
+  defp check_option([], error_atom), do: {:error, error_atom}
+  defp check_option([head | _tail], _atom) when head != nil, do: {:ok, head}
+  defp check_option([_head | tail], atom), do: check_option(tail, atom)
+  defp check_option(value, _atom), do: {:ok, value}
+
   def deploy_helper(bin, abi, args) do
     constructor_arg_data =
       if arguments = args[:args] do
@@ -251,6 +328,8 @@ defmodule ExW3.Contract do
   end
 
   def eth_call_helper(address, abi, method_name, args, opts \\ []) do
+    method_name = method_name |> method_name()
+
     ExW3.Rpc.eth_call([
       %{
         to: address,
@@ -268,64 +347,22 @@ defmodule ExW3.Contract do
     end
   end
 
-  def eth_send_helper(address, abi, method_name, args, options) do
-    encoded_options =
-      ExW3.Abi.encode_options(
-        options,
-        [:gas, :gasPrice, :value, :nonce]
-      )
-
-    gas = ExW3.Abi.encode_option(args[:options][:gas])
-    gasPrice = ExW3.Abi.encode_option(args[:options][:gas_price])
-
-    ExW3.Rpc.eth_send([
-      Map.merge(
-        %{
-          to: address,
-          data: "0x#{ExW3.Abi.encode_method_call(abi, method_name, args)}",
-          gas: gas,
-          gasPrice: gasPrice
-        },
-        Map.merge(options, encoded_options)
-      )
-    ])
+  defp event_data_format_helper(event_data) do
+    event_data
+    |> param_helper(:fromBlock)
+    |> param_helper(:toBlock)
+    |> Map.delete(:topics)
   end
 
-  defp register_helper(contract_info) do
-    if contract_info[:abi] do
-      contract_info ++ init_events(contract_info[:abi])
-    else
-      raise "ABI not provided upon initialization"
-    end
+  defp get_topics(contract_name, event_name, event_data) do
+    contract_info = contract_name |> ExW3.Contract.State.get(:contract)
+
+    event_signature = contract_info[:event_names][event_name]
+    topic_types = contract_info[:events][event_signature][:topic_types]
+    topic_names = contract_info[:events][event_signature][:topic_names]
+
+    filter_topics_helper(event_signature, event_data, topic_types, topic_names)
   end
-
-  # Options' checkers
-
-  defp check_option(nil, error_atom), do: {:error, error_atom}
-  defp check_option([], error_atom), do: {:error, error_atom}
-  defp check_option([head | _tail], _atom) when head != nil, do: {:ok, head}
-  defp check_option([_head | tail], atom), do: check_option(tail, atom)
-  defp check_option(value, _atom), do: {:ok, value}
-
-  # Casts
-
-  def handle_cast({:at, {name, address}}, state) do
-    contract_state = state[name]
-    contract_state = Keyword.put(contract_state, :address, address)
-    state = Map.put(state, name, contract_state)
-    {:noreply, state}
-  end
-
-  def handle_cast({:register, {name, contract_info}}, state) do
-    {:noreply, Map.put(state, name, register_helper(contract_info))}
-  end
-
-  def handle_cast({:uninstall_filter, filter_id}, state) do
-    ExW3.uninstall_filter(filter_id)
-    {:noreply, Map.put(state, :filters, Map.delete(state[:filters], filter_id))}
-  end
-
-  # Calls
 
   defp filter_topics_helper(event_signature, event_data, topic_types, topic_names) do
     topics =
@@ -364,21 +401,6 @@ defmodule ExW3.Contract do
     end
   end
 
-  def from_block_helper(event_data) do
-    if event_data[:fromBlock] do
-      new_from_block =
-        if Enum.member?(["latest", "earliest", "pending"], event_data[:fromBlock]) do
-          event_data[:fromBlock]
-        else
-          ExW3.Abi.encode_data("(uint256)", [event_data[:fromBlock]])
-        end
-
-      Map.put(event_data, :fromBlock, new_from_block)
-    else
-      event_data
-    end
-  end
-
   defp param_helper(event_data, key) do
     if event_data[key] do
       new_param =
@@ -396,30 +418,14 @@ defmodule ExW3.Contract do
     end
   end
 
-  defp event_data_format_helper(event_data) do
-    event_data
-    |> param_helper(:fromBlock)
-    |> param_helper(:toBlock)
-    |> Map.delete(:topics)
-  end
-
-  def get_event_attributes(state, contract_name, event_name) do
-    contract_info = state[contract_name]
-    contract_info[:events][contract_info[:event_names][event_name]]
-  end
-
-  defp extract_non_indexed_fields(data, names, signature) do
-    Enum.zip(names, ExW3.Abi.decode_event(data, signature)) |> Enum.into(%{})
-  end
-
-  defp format_logs([], _, _, _) do
+  defp format_logs([], _, _) do
     []
   end
 
-  defp format_logs(logs, state, contract_name, event_name) do
+  defp format_logs(logs, contract_name, event_name) do
     event_attributes =
-      state
-      |> get_event_attributes(contract_name, event_name)
+      contract_name
+      |> get_event_attributes(event_name)
 
     logs
     |> Enum.map(fn log ->
@@ -429,176 +435,55 @@ defmodule ExW3.Contract do
           "logIndex",
           "transactionIndex"
         ]),
-        format_log_data(log, event_attributes)
+        log
+        |> Map.put(
+          "data",
+          log
+          |> ExW3.Log.format_data(event_attributes)
+        )
       ]
       |> Enum.reduce(&Map.merge/2)
     end)
   end
 
-  defp format_log_data(log, event_attributes) do
-    non_indexed_fields =
-      extract_non_indexed_fields(
-        Map.get(log, "data"),
-        event_attributes[:non_indexed_names],
-        event_attributes[:signature]
-      )
-
-    indexed_fields =
-      if length(log["topics"]) > 1 do
-        [_head | tail] = log["topics"]
-
-        decoded_topics =
-          Enum.map(0..(length(tail) - 1), fn i ->
-            topic_type = Enum.at(event_attributes[:topic_types], i)
-            topic_data = Enum.at(tail, i)
-
-            {decoded} = ExW3.Abi.decode_data(topic_type, topic_data)
-
-            decoded
-          end)
-
-        Enum.zip(event_attributes[:topic_names], decoded_topics) |> Enum.into(%{})
-      else
-        %{}
-      end
-
-    new_data = Map.merge(indexed_fields, non_indexed_fields)
-
-    Map.put(log, "data", new_data)
+  def get_event_attributes(contract_name, event_name) do
+    contract_info = contract_name |> ExW3.Contract.State.get(:contract)
+    contract_info[:events][contract_info[:event_names][event_name]]
   end
 
-  def handle_call({:filter, {contract_name, event_name, event_data, opts}}, _from, state) do
-    contract_info = state[contract_name]
+  defp contract(name) do
+    name
+    |> ExW3.Contract.State.get(:contract)
+  end
 
-    topics = state |> get_topics(contract_name, event_name, event_data)
+  def eth_send_helper(address, abi, method_name, args, options) do
+    encoded_options =
+      ExW3.Abi.encode_options(
+        options,
+        [:gas, :gasPrice, :value, :nonce]
+      )
 
-    payload =
+    gas = ExW3.Abi.encode_option(args[:options][:gas])
+    gasPrice = ExW3.Abi.encode_option(args[:options][:gas_price])
+
+    ExW3.Rpc.eth_send([
       Map.merge(
-        %{address: contract_info[:address], topics: topics},
-        event_data_format_helper(event_data)
+        %{
+          to: address,
+          data: "0x#{ExW3.Abi.encode_method_call(abi, method_name, args)}",
+          gas: gas,
+          gasPrice: gasPrice
+        },
+        Map.merge(options, encoded_options)
       )
-
-    filter_id = ExW3.Rpc.new_filter(payload, opts)
-
-    {:reply, {:ok, filter_id},
-     Map.put(
-       state,
-       :filters,
-       Map.put(state[:filters], filter_id, %{
-         contract_name: contract_name,
-         event_name: event_name
-       })
-     )}
+    ])
   end
 
-  def handle_call({:get_filter_changes, filter_id, opts}, _from, state) do
-    filter_id
-    |> ExW3.Rpc.get_filter_changes(opts)
-    |> then(fn
-      [] ->
-        []
-
-      logs when is_list(logs) ->
-        filter_info =
-          state[:filters]
-          |> Map.get(filter_id)
-
-        logs
-        |> format_logs(state, filter_info[:contract_name], filter_info[:event_name])
-
-      v ->
-        v
-    end)
-    |> then(fn logs ->
-      {:reply, {:ok, logs}, state}
-    end)
+  defp method_name(name) when is_atom(name) do
+    Atom.to_string(name)
   end
 
-  def handle_call({:deploy, {name, args}}, _from, state) do
-    contract_info = state[name]
-
-    with {:ok, _} <- check_option(args[:options][:from], :missing_sender),
-         {:ok, _} <- check_option(args[:options][:gas], :missing_gas),
-         {:ok, bin} <- check_option([state[:bin], args[:bin]], :missing_binary) do
-      {contract_addr, tx_hash} = deploy_helper(bin, contract_info[:abi], args)
-      result = {:ok, contract_addr, tx_hash}
-      {:reply, result, state}
-    else
-      err -> {:reply, err, state}
-    end
-  end
-
-  def handle_call({:address, name}, _from, state) do
-    {:reply, state[name][:address], state}
-  end
-
-  def handle_call({:send, {contract_name, method_name, args, options}}, _from, state) do
-    contract_info = state[contract_name]
-
-    with {:ok, address} <- check_option(contract_info[:address], :missing_address),
-         {:ok, _} <- check_option(options[:from], :missing_sender),
-         {:ok, _} <- check_option(options[:gas], :missing_gas) do
-      result =
-        eth_send_helper(
-          address,
-          contract_info[:abi],
-          Atom.to_string(method_name),
-          args,
-          options
-        )
-
-      {:reply, result, state}
-    else
-      err -> {:reply, err, state}
-    end
-  end
-
-  def handle_call({:tx_receipt, {contract_name, tx_hash}}, _from, state) do
-    contract_info = state[contract_name]
-
-    {:ok, receipt} = ExW3.tx_receipt(tx_hash)
-
-    events = contract_info[:events]
-    logs = receipt["logs"]
-
-    formatted_logs =
-      Enum.map(logs, fn log ->
-        topic = Enum.at(log["topics"], 0)
-        event_attributes = Map.get(events, topic)
-
-        if event_attributes do
-          non_indexed_fields =
-            Enum.zip(
-              event_attributes[:non_indexed_names],
-              ExW3.Abi.decode_event(log["data"], event_attributes[:signature])
-            )
-            |> Enum.into(%{})
-
-          if length(log["topics"]) > 1 do
-            [_head | tail] = log["topics"]
-
-            decoded_topics =
-              Enum.map(0..(length(tail) - 1), fn i ->
-                topic_type = Enum.at(event_attributes[:topic_types], i)
-                topic_data = Enum.at(tail, i)
-
-                {decoded} = ExW3.Abi.decode_data(topic_type, topic_data)
-
-                decoded
-              end)
-
-            indexed_fields =
-              Enum.zip(event_attributes[:topic_names], decoded_topics) |> Enum.into(%{})
-
-            Map.merge(indexed_fields, non_indexed_fields)
-          else
-            non_indexed_fields
-          end
-        else
-          nil
-        end
-      end)
-
-    {:reply, {:ok, {receipt, formatted_logs}}, state}
+  defp method_name(name) do
+    name
   end
 end

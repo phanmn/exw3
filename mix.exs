@@ -36,7 +36,8 @@ defmodule ExW3.MixProject do
       {:ex_keccak, "~> 0.7"},
       {:ex_abi, "~> 0.6"},
       {:dialyxir, "~> 1.0", only: [:dev], runtime: false},
-      {:jason, "~> 1.4"}
+      {:jason, "~> 1.4"},
+      {:ok, "~> 2.3"}
     ]
   end
 
