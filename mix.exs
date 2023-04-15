@@ -26,7 +26,9 @@ defmodule ExW3.MixProject do
   end
 
   def application do
-    [applications: [:logger, :ex_abi, :ethereumex]]
+    [
+      extra_applications: [:logger, :runtime_tools]
+    ]
   end
 
   defp deps do
